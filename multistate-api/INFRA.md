@@ -70,14 +70,14 @@ aws cloudformation execute-change-set \
 ```
 
 `--capabilities CAPABILITY_NAMED_IAM` is required for
-`multistate-bootstrap-dev` (creates `multistate-cfn-deploy-dev`) and
+`multistate-bootstrap-dev` (creates `multistate-api-cfn-deploy`) and
 `multistate-app-dev` (creates `multistate-app-irsa-<env>`) since both name
 their IAM roles explicitly; it's a no-op for the network and artifact
 stacks and is safe to pass on every deploy.
 
 The `Replacement` column in the describe-change-set output is the one
 line item to scrutinize on every PR — anything that resolves to `True` on
-`DbInstance`, `ArtifactBucket`, or `CfnDeployBucket` is a signal to stop
+`DbInstance`, `ArtifactBucket`, or `BootstrapBucket` is a signal to stop
 and confirm `DeletionPolicy`/`UpdateReplacePolicy` will actually protect
 the data before executing.
 
@@ -94,7 +94,7 @@ runs on every PR touching `cfn/`:
 - `cfn-nag` (>=0.8.10) — security-posture scan. Zero `FAIL`s are required
   to merge; the accepted `WARN`s are listed below with rationale.
 - `aws cloudformation validate-template` — per-template syntax validation
-  using the same `multistate-cfn-deploy-dev` OIDC role the deploy job
+  using the same `multistate-api-cfn-deploy` OIDC role the deploy job
   uses, scoped read-only by the actions it's granted.
 
 This workflow only lints/validates. The actual `create-change-set` →
@@ -108,7 +108,7 @@ template change is reviewed as a diff before it touches a real stack.
 | W33 | `PublicSubnet{A,B,C}` | `MapPublicIpOnLaunch: true` is the point of a public subnet; the private subnets (where the app and DB actually run) don't have it. |
 | W40 / W5 | `ApplicationSecurityGroup` egress | Egress is intentionally open; ingress is the restricted side (VPC-CIDR-only on port 8080). Private-subnet workloads still only reach the internet through the env's NAT gateway(s). |
 | W28 | `CfnDeployRole`, `AppIrsaRole`, `ApplicationSecurityGroup` | Names are pinned deliberately — the GitHub Actions trust policy and the Kubernetes IRSA ServiceAccount annotation both reference these names directly, so a CFN-generated random suffix would break the OIDC trust wiring on every stack recreate. |
-| W35 | `CfnDeployBucket`, `ArtifactBucket` | Access logging deferred: needs a dedicated log-target bucket this deliverable doesn't otherwise require. Tracked as a fast-follow, not shipped blocking this PR. |
+| W35 | `BootstrapBucket`, `ArtifactBucket` | Access logging deferred: needs a dedicated log-target bucket this deliverable doesn't otherwise require. Tracked as a fast-follow, not shipped blocking this PR. |
 | W60 | `Vpc` | Flow logs deferred for the same reason — out of scope for the network topology this deliverable asks for. |
 
 `FAIL`s are not accepted under any rationale — two were found and fixed
@@ -158,7 +158,7 @@ produced the first draft:
   secret value in the template, the change-set, or CloudTrail.
 - **Bucket deletion: both `DeletionPolicy: Retain` AND
   `UpdateReplacePolicy: Retain`.** Both `ArtifactBucket`
-  (`multistate-artifacts-dev.yaml`) and `CfnDeployBucket`
+  (`multistate-artifacts-dev.yaml`) and `BootstrapBucket`
   (`multistate-bootstrap-dev.yaml`) set both policies. `DeletionPolicy`
   alone only protects against a stack delete; a property change that
   forces replacement (e.g. `BucketName`) is a separate code path that

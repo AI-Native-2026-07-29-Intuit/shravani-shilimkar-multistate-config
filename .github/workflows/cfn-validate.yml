@@ -52,7 +52,7 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/multistate-cfn-deploy-dev
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/multistate-api-cfn-deploy
           aws-region: us-east-1
 
       - name: aws cloudformation validate-template
