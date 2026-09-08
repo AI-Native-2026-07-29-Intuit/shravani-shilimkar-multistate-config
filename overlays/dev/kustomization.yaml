@@ -31,3 +31,10 @@ patches:
       - op: replace
         path: /data/LOGGING_LEVEL_ROOT
         value: DEBUG
+      # This dev machine's local Docker Compose mongo publishes to host
+      # port 27018, not the default 27017 (27017 was already bound by an
+      # unrelated ssh tunnel + another project's mongo container). See
+      # compose.override.yaml's mongo service comment.
+      - op: replace
+        path: /data/SPRING_DATA_MONGODB_URI
+        value: mongodb://host.k3d.internal:27018/multistate

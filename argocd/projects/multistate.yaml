@@ -21,13 +21,18 @@ spec:
     - namespace: multistate-prod
       server: https://kubernetes.default.svc
 
-  # Empty: this project must never create/modify cluster-scoped resources.
-  clusterResourceWhitelist: []
-
-  # Only the kinds the W5 D3 manifests actually use.
-  namespaceResourceWhitelist:
+  # Namespace is cluster-scoped in Argo CD's eyes even though
+  # base/00-namespace.yaml lives alongside namespaced resources -- an
+  # empty list here blocks it outright (confirmed: sync fails with
+  # "resource :Namespace is not permitted in project multistate").
+  # Everything else stays off this list; no other cluster-scoped kind
+  # is ever needed by this project.
+  clusterResourceWhitelist:
     - group: ""
       kind: Namespace
+
+  # Only the namespace-scoped kinds the W5 D3 manifests actually use.
+  namespaceResourceWhitelist:
     - group: ""
       kind: ResourceQuota
     - group: ""
