@@ -1,0 +1,64 @@
+name: cfn-validate
+
+# Lints, security-scans, and syntax-validates every CFN template on any PR
+# that touches cfn/. This is a gate, not the deploy job -- it never runs
+# create-change-set/execute-change-set; that flow is a separate, manually
+# approved job so a template change is always reviewed as a ChangeSet diff
+# in the PR body before anything touches a real stack.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cfn/**'
+      - '.github/workflows/cfn-validate.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  cfn-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cfn-lint
+        run: pip install 'cfn-lint>=1.20,<2'
+
+      - name: Run cfn-lint
+        # W3691 (RDS engine-version deprecation) is excluded: AWS retires
+        # Postgres minor versions faster than this pin can be kept current,
+        # and the actual-available-versions check belongs to
+        # `aws rds describe-db-engine-versions` at deploy time, not this gate.
+        run: cfn-lint cfn/*.yaml --ignore-checks W3691
+
+  cfn-nag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cfn-nag
+        run: gem install cfn-nag -v '~> 0.8.10'
+
+      - name: Run cfn-nag
+        run: cfn_nag_scan --input-path cfn/ --output-format txt
+
+  validate-template:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/multistate-cfn-deploy-dev
+          aws-region: us-east-1
+
+      - name: aws cloudformation validate-template
+        run: |
+          set -euo pipefail
+          for template in cfn/*.yaml; do
+            echo "Validating ${template}"
+            aws cloudformation validate-template --template-body "file://${template}"
+          done

@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  multistate-app-dev: application-tier stack. Consumes the network stack's
+  private subnets + app SG via !ImportValue (never hardcoded IDs), provisions
+  the Postgres instance the multistate-api workload connects to, and defines
+  the IRSA role W6 D5's Rollout will bind via a Kubernetes ServiceAccount
+  annotation. The DB master password is NEVER a NoEcho Parameter -- Parameters
+  land in the change-set diff and the stack's event history in plaintext-ish
+  form even with NoEcho masking the console value, and NoEcho does not stop
+  the value being readable to anyone with DescribeStacks + the right IAM on
+  older API behavior for some resource types. Secrets Manager dynamic
+  reference resolves the value at deploy time and it never touches the
+  template, the change-set, or CloudTrail.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+  NetworkStackName:
+    Type: String
+    Default: multistate-network-dev
+    Description: Stack name whose outputs this stack imports via !ImportValue.
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+  DbAllocatedStorageGb:
+    Type: Number
+    Default: 20
+    MinValue: 20
+  EksOidcProviderArn:
+    Type: String
+    Description: >
+      ARN of the platform-provided EKS cluster's IAM OIDC provider (e.g.
+      arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/XXXX).
+  EksOidcProviderUrl:
+    Type: String
+    Description: >
+      Same OIDC provider, without the leading https:// (e.g.
+      oidc.eks.us-east-1.amazonaws.com/id/XXXX). Used to build the
+      StringEquals trust-policy condition keys -- StringEquals, never
+      StringLike, because StringLike on a *:sub wildcard lets any namespace's
+      any service account assume this role.
+  K8sNamespace:
+    Type: String
+    Default: multistate-dev
+  K8sServiceAccountName:
+    Type: String
+    Default: multistate-api
+
+Resources:
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub 'multistate ${EnvironmentName} DB subnet group (private subnets only)'
+      SubnetIds: !Split
+        - ','
+        - Fn::ImportValue: !Sub '${NetworkStackName}-PrivateSubnets'
+
+  DbInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub 'multistate-${EnvironmentName}-db'
+      Engine: postgres
+      EngineVersion: '16.8'
+      DBInstanceClass: !Ref DbInstanceClass
+      AllocatedStorage: !Ref DbAllocatedStorageGb
+      StorageEncrypted: true
+      # Both username and password resolve from the same Secrets Manager
+      # secret's JSON at deploy time -- cfn-nag (F24) rejects a plaintext
+      # or defaulted-Parameter MasterUsername for the same reason NoEcho is
+      # rejected for the password: either one is visible in the change-set
+      # and stack-event history. The bootstrap secret must therefore hold
+      # both a "username" and a "password" key.
+      MasterUsername: !Sub '{{resolve:secretsmanager:multistate/${EnvironmentName}/db-master:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:multistate/${EnvironmentName}/db-master:SecretString:password}}'
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups:
+        - Fn::ImportValue: !Sub '${NetworkStackName}-ApplicationSecurityGroupId'
+      MultiAZ: false
+      PubliclyAccessible: false
+      BackupRetentionPeriod: 7
+      DeletionProtection: true
+
+  AppIrsaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'multistate-app-irsa-${EnvironmentName}'
+      Description: >
+        Assumed by the multistate-api pod's Kubernetes ServiceAccount via
+        IRSA. Trust condition uses StringEquals against the exact namespace
+        and service-account subject and pins aud to sts.amazonaws.com --
+        StringLike here would let any SA in any namespace on the cluster
+        assume this role.
+      # AssumeRolePolicyDocument is rendered as a JSON string via Fn::Sub
+      # (rather than authored as nested YAML mappings) because the trust
+      # condition's keys themselves must be built from the OIDC provider
+      # URL (e.g. "oidc.eks.us-east-1.amazonaws.com/id/XXXX:sub"). YAML/JSON
+      # mapping keys can't be intrinsic functions, so a native !Sub-as-key
+      # is invalid; interpolating the whole document as one string sidesteps
+      # that and still resolves at deploy time to a StringEquals (never
+      # StringLike) condition on the exact namespace:service-account subject.
+      AssumeRolePolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Federated": "${EksOidcProviderArn}" },
+              "Action": "sts:AssumeRoleWithWebIdentity",
+              "Condition": {
+                "StringEquals": {
+                  "${EksOidcProviderUrl}:aud": "sts.amazonaws.com",
+                  "${EksOidcProviderUrl}:sub": "system:serviceaccount:${K8sNamespace}:${K8sServiceAccountName}"
+                }
+              }
+            }
+          ]
+        }
+      Policies:
+        - PolicyName: multistate-app-secret-read
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadDbMasterSecret
+                Effect: Allow
+                Action:
+                  - 'secretsmanager:GetSecretValue'
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:multistate/${EnvironmentName}/db-master-??????'
+              - Sid: ReadArtifactBucket
+                Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                Resource:
+                  - !Sub
+                    - '${BucketArn}/*'
+                    - BucketArn: !ImportValue 'multistate-artifacts-dev-BucketArn'
+
+Outputs:
+  DbEndpointAddress:
+    Value: !GetAtt DbInstance.Endpoint.Address
+    Export:
+      Name: !Sub '${AWS::StackName}-DbEndpointAddress'
+  AppIrsaRoleArn:
+    Value: !GetAtt AppIrsaRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-AppIrsaRoleArn'

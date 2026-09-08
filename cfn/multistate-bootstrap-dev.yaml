@@ -1,0 +1,143 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  multistate-bootstrap-dev: one-time-per-account substrate for the multistate
+  capstone. Reuses the GitHub OIDC provider created by the W6 D1 CI PR (does
+  NOT recreate it) and adds the least-privilege CI deploy role the
+  cfn-validate/cfn-deploy pipeline assumes, plus a private, encrypted bucket
+  for packaged CFN templates and lint/nag CI artefacts. No application data
+  lives here -- see multistate-artifacts-dev.yaml for that.
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Default: uptimecrew
+    Description: GitHub org allowed to assume the deploy role via OIDC.
+  GitHubRepo:
+    Type: String
+    Default: multistate-config
+    Description: GitHub repo allowed to assume the deploy role via OIDC.
+  OidcProviderArn:
+    Type: String
+    Description: >
+      ARN of the existing GitHub Actions OIDC provider created by the W6 D1
+      CI-on-OIDC PR (token.actions.githubusercontent.com). This stack does not
+      create the provider -- IAM only allows one OIDC provider per URL per
+      account, and a second CFN-owned copy would collide with it.
+
+Resources:
+  CfnDeployBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'multistate-cfn-bootstrap-${AWS::AccountId}-dev'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldTemplateVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+
+  CfnDeployBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CfnDeployBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonTlsTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt CfnDeployBucket.Arn
+              - !Sub '${CfnDeployBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
+  CfnDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: multistate-cfn-deploy-dev
+      Description: >
+        Assumed by GitHub Actions (OIDC) to run the create-change-set ->
+        describe-change-set -> execute-change-set flow against the
+        multistate-* stacks. Trust is scoped with StringEquals (never
+        StringLike) on both the audience and the repo/branch subject claim.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref OidcProviderArn
+            Action: 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals:
+                'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com'
+                'token.actions.githubusercontent.com:sub': !Sub 'repo:${GitHubOrg}/${GitHubRepo}:ref:refs/heads/main'
+      MaxSessionDuration: 3600
+      Policies:
+        - PolicyName: multistate-cfn-deploy-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: CloudFormationChangeSetFlow
+                Effect: Allow
+                Action:
+                  - 'cloudformation:CreateChangeSet'
+                  - 'cloudformation:DescribeChangeSet'
+                  - 'cloudformation:ExecuteChangeSet'
+                  - 'cloudformation:DeleteChangeSet'
+                  - 'cloudformation:DescribeStacks'
+                  - 'cloudformation:DescribeStackEvents'
+                  - 'cloudformation:DescribeStackResources'
+                  - 'cloudformation:GetTemplate'
+                  - 'cloudformation:ValidateTemplate'
+                  - 'cloudformation:DetectStackDrift'
+                  - 'cloudformation:DescribeStackDriftDetectionStatus'
+                  - 'cloudformation:DetectStackResourceDrift'
+                  - 'cloudformation:ListStackResources'
+                Resource:
+                  - !Sub 'arn:aws:cloudformation:us-east-1:${AWS::AccountId}:stack/multistate-*/*'
+              - Sid: DeployBucketReadWrite
+                Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !GetAtt CfnDeployBucket.Arn
+                  - !Sub '${CfnDeployBucket.Arn}/*'
+              - Sid: PassStackRolesOnly
+                Effect: Allow
+                Action: 'iam:PassRole'
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/multistate-*'
+                Condition:
+                  StringEquals:
+                    'iam:PassedToService': 'cloudformation.amazonaws.com'
+
+Outputs:
+  CfnDeployBucketName:
+    Description: Bucket holding packaged CFN templates and CI lint/nag reports.
+    Value: !Ref CfnDeployBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-CfnDeployBucketName'
+  CfnDeployRoleArn:
+    Description: Role the CI pipeline assumes for the ChangeSet deploy flow.
+    Value: !GetAtt CfnDeployRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-CfnDeployRoleArn'
