@@ -1,0 +1,107 @@
+# argocd/applicationsets/multistate-api-envs.yaml
+# Templates one Application per env. The list generator drives
+# (env, overlay, namespace, wave) tuples; the inner clusters generator
+# scopes the fleet to clusters labelled tier=workload -- the local k3d
+# cluster's in-cluster registration is labelled by hand (see
+# multistate-api/GITOPS.md for the command). Adding a new env is a
+# one-line entry in the elements list.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: multistate-api-envs
+  namespace: argocd
+spec:
+  # If an env falls out of the matrix, KEEP the existing Application +
+  # workload running rather than deleting it -- a human re-reviews
+  # before any teardown. The default (delete) is the wrong default for
+  # prod.
+  syncPolicy:
+    preserveResourcesOnDeletion: true
+
+  generators:
+    - matrix:
+        generators:
+          # Inner generator A: explicit env list.
+          - list:
+              elements:
+                - env: dev
+                  overlay: overlays/dev
+                  namespace: multistate-dev
+                  wave: "0"
+                - env: staging
+                  overlay: overlays/staging
+                  namespace: multistate-staging
+                  wave: "1"
+                - env: prod
+                  overlay: overlays/prod
+                  namespace: multistate-prod
+                  wave: "2"
+          # Inner generator B: every cluster tagged tier=workload.
+          - clusters:
+              selector:
+                matchLabels:
+                  uptimecrew.example.internal/tier: workload
+
+  template:
+    metadata:
+      # Application names must be unique; composed from the params.
+      name: multistate-api-{{env}}
+      namespace: argocd
+      # No hardcoded finalizer here on purpose. The ApplicationSet
+      # controller itself decides whether to add
+      # resources-finalizer.argocd.argoproj.io, based on
+      # spec.syncPolicy.preserveResourcesOnDeletion above (adds it when
+      # false, omits it when true). Hardcoding the finalizer here would
+      # force it onto every generated Application regardless of that
+      # setting, which defeats preserveResourcesOnDeletion: true --
+      # the generated Application would still cascade-delete its
+      # workload the moment its matrix entry disappears.
+      annotations:
+        # Sync-wave on the generated Application orders the cross-env
+        # promotion: dev syncs first, staging second, prod third, on a
+        # multi-Application sync (e.g. the ApplicationSet's first
+        # apply). Within a single Application, the Namespace-before-
+        # Deployment ordering lives on the Namespace resource itself
+        # (see each overlay's Namespace-targeted patch).
+        argocd.argoproj.io/sync-wave: "{{wave}}"
+      labels:
+        env: "{{env}}"
+        team: multistate
+    spec:
+      project: multistate
+      source:
+        repoURL: https://github.com/AI-Native-2026-07-29-Intuit/shravani-shilimkar-multistate-config.git
+        path: "{{overlay}}"
+        # Tracking the feature branch until the PR merges -- flip to
+        # `main` once w6d2-implementation lands.
+        targetRevision: w6d2-implementation
+      destination:
+        server: "{{server}}"
+        namespace: "{{namespace}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+          allowEmpty: false
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+          - ApplyOutOfSyncOnly=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 3m
+      # multistate-api-secrets ships a committed placeholder password;
+      # the real per-env password gets set directly on each namespace's
+      # live Secret (kubectl patch, never committed). Without this,
+      # selfHeal reverts it back to the placeholder on every reconcile.
+      ignoreDifferences:
+        - group: ""
+          kind: Secret
+          name: multistate-api-secrets
+          jsonPointers:
+            - /data/SPRING_DATASOURCE_PASSWORD

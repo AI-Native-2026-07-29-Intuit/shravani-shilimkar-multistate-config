@@ -9,9 +9,6 @@ resources:
 
 namespace: multistate-dev
 
-commonAnnotations:
-  argocd.argoproj.io/sync-wave: "0"
-
 images:
   - name: uptimecrew/multistate-api
     newTag: 0.1.0
@@ -21,6 +18,23 @@ replicas:
     count: 1
 
 patches:
+  # Namespace lands before the Deployment/Service on a brand-new
+  # cluster. No annotation is needed on the other resources -- Argo CD
+  # already treats an unannotated resource as wave 0 by default, and a
+  # blanket commonAnnotations stamp here would clobber this Namespace
+  # override right back to whatever the blanket value was (confirmed:
+  # a prior version of this file did exactly that).
+  - target:
+      kind: Namespace
+      name: multistate-dev
+    patch: |-
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: multistate-dev
+        annotations:
+          argocd.argoproj.io/sync-wave: "-1"
+
   - target:
       kind: ConfigMap
       name: multistate-api-config
