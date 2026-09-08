@@ -1,0 +1,54 @@
+# The dev overlay -- the smallest viable patch over the W5 D3 base.
+# Same shape repeats at overlays/staging/ and overlays/prod/ with
+# different namespace + replica + image-tag values.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namespace: multistate-dev
+
+images:
+  - name: uptimecrew/multistate-api
+    newTag: 0.1.0
+
+replicas:
+  - name: multistate-api
+    count: 1
+
+patches:
+  # Namespace lands before the Deployment/Service on a brand-new
+  # cluster. No annotation is needed on the other resources -- Argo CD
+  # already treats an unannotated resource as wave 0 by default, and a
+  # blanket commonAnnotations stamp here would clobber this Namespace
+  # override right back to whatever the blanket value was (confirmed:
+  # a prior version of this file did exactly that).
+  - target:
+      kind: Namespace
+      name: multistate-dev
+    patch: |-
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: multistate-dev
+        annotations:
+          argocd.argoproj.io/sync-wave: "-1"
+
+  - target:
+      kind: ConfigMap
+      name: multistate-api-config
+    patch: |-
+      - op: replace
+        path: /data/SPRING_PROFILES_ACTIVE
+        value: dev
+      - op: replace
+        path: /data/LOGGING_LEVEL_ROOT
+        value: DEBUG
+      # This dev machine's local Docker Compose mongo publishes to host
+      # port 27018, not the default 27017 (27017 was already bound by an
+      # unrelated ssh tunnel + another project's mongo container). See
+      # compose.override.yaml's mongo service comment.
+      - op: replace
+        path: /data/SPRING_DATA_MONGODB_URI
+        value: mongodb://host.k3d.internal:27018/multistate

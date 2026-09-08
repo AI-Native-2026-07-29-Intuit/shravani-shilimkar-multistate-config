@@ -1,0 +1,19 @@
+# Namespace only. The W5 D3 manifest this was copied from also bundled a
+# ResourceQuota + LimitRange here (bounded blast radius: a hard ceiling +
+# sane per-container defaults) -- Task 2's AppProject blacklists both
+# kinds project-wide (quota knobs are platform-owned, not app-team
+# owned), so they were split out rather than left in this file to sit
+# permanently "Unknown" in Argo CD's resource tree. They still exist in
+# the live cluster from Task 1's sync; this repo just stops tracking
+# them. See argocd/projects/multistate.yaml's namespaceResourceBlacklist
+# comment.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: multistate-dev
+  labels:
+    app.kubernetes.io/name:       multistate-dev
+    app.kubernetes.io/component:  namespace
+    app.kubernetes.io/part-of:    multistate
+    app.kubernetes.io/managed-by: kubectl
