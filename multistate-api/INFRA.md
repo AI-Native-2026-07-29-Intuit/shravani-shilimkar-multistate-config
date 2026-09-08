@@ -179,13 +179,37 @@ Both are exactly the class of finding this audit step exists to catch —
 neither would have shown up from reading the template casually, only from
 running the scanner.
 
-## Known limitation of this pass
+## Known limitation of this pass: no AWS account access
 
 This authoring environment has no AWS credentials
-(`aws sts get-caller-identity` returns `NoCredentials`), so the
-`create-change-set` → `execute-change-set` flow, the live drift drill, and
-`aws cloudformation validate-template` were not run against a real
-account here. `cfn-lint` and `cfn-nag` were run locally against all four
-templates (0 lint errors, 0 nag `FAIL`s) and are documented above with
-their output; the commands in this doc are the exact ones to run once
-this PR lands and the deploy job has real credentials.
+(`aws sts get-caller-identity` returns `NoCredentials`). Everything that
+requires an AWS API call against a real account was **not** run here and
+is marked complete on the strength of the template/CI authoring plus
+local static analysis (`cfn-lint`, `cfn-nag`) only. Concretely, per task:
+
+- **Task 1 (bootstrap stack).** `cfn/multistate-bootstrap-dev.yaml` is
+  authored to the letter of the reference template, and passes `cfn-lint`
+  (0 errors) and `cfn-nag` (0 `FAIL`s). Not done: the actual
+  `create-change-set` → `describe-change-set` → `execute-change-set` →
+  `wait stack-create-complete` sequence, and confirming via
+  `describe-stacks` that the stack reaches `CREATE_COMPLETE` with
+  `BootstrapBucketName` + `CfnDeployRoleArn` present in `Outputs`. The
+  exact commands are in [Deploy flow](#deploy-flow-changeset-every-time)
+  above — run those against a real account to close this out.
+- **Tasks 2–3 (network, app, artifacts stacks).** Same pattern: templates
+  pass `cfn-lint`/`cfn-nag` locally; no stack has actually been created,
+  so the `!ImportValue` cross-stack wiring between
+  `multistate-network-dev` → `multistate-app-dev` and
+  `multistate-artifacts-dev` → `multistate-app-dev` has not been
+  exercised against real exports.
+- **Task 4 (CI + drift + Skill audit).** `cfn-validate.yml` has not run
+  in GitHub Actions (needs the OIDC role from Task 1 to exist first);
+  the drift drill in [Drift detection](#drift-detection) above describes
+  the expected `detect-stack-drift` behavior but was not run against a
+  live console edit. The Skill-output audit itself is unaffected by AWS
+  access — that section stands as-is.
+
+Once a real account is available: deploy the bootstrap stack first (it's
+the trust anchor everything else assumes), confirm its `Outputs`, then
+run the same ChangeSet flow for the network, artifacts, and app stacks in
+that order, and finally let `cfn-validate.yml` run for real on the PR.
