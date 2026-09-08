@@ -177,12 +177,35 @@ mutable tag leaves open):
 This workflow only lints/validates. The actual `create-change-set` →
 `execute-change-set` flow is a separate, manually-triggered step (see
 [Deploy flow](#deploy-flow-changeset-every-time) above) so every template
-change is reviewed as a diff before it touches a real stack. `cfn-validate`
-is intended as a **required status check on `main`** — set that in the
-repo's branch protection settings (Settings → Branches → Branch protection
-rules → `main` → Require status checks → `validate`); that setting lives
-in GitHub's UI/API, not in the workflow YAML itself, so it's a one-time
-manual step for a repo admin, not something this PR's diff can carry.
+change is reviewed as a diff before it touches a real stack.
+
+`cfn-validate`'s `cfn-lint + cfn-nag + aws validate-template` check is
+configured as a **required status check** on `w6d2-implementation` — the
+repo's actual default branch, and the base every PR in this repo targets
+(the deliverable's "main" is this branch in practice). Set via:
+
+```bash
+cat <<'JSON' | gh api -X PUT \
+  repos/AI-Native-2026-07-29-Intuit/shravani-shilimkar-multistate-config/branches/w6d2-implementation/protection \
+  --input -
+{
+  "required_status_checks": {
+    "strict": false,
+    "contexts": ["cfn-lint + cfn-nag + aws validate-template"]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null
+}
+JSON
+```
+
+This is a repo-settings change (GitHub's branch-protection API), not
+something expressible in the workflow YAML itself — it was applied
+directly via the GitHub API rather than shipped in this PR's diff. PRs
+into `w6d2-implementation` now show the check as required and block
+merge until it reports success (it will read "Expected — Waiting for
+status to be reported" until `cfn-validate` has run at least once).
 
 ### Accepted cfn-nag WARNs
 
@@ -350,17 +373,19 @@ local static analysis (`cfn-lint`, `cfn-nag`) only. Concretely, per task:
   wiring between `multistate-network-dev` → `multistate-app-dev` (on
   `VpcId`, `PrivateSubnets`, `AppSgId`) has therefore not been exercised
   against real exports either.
-- **Task 4 (CI + drift + ChangeSet-UPDATE + Skill audit).**
-  `cfn-validate.yml` has not run in GitHub Actions (needs
+- **Task 4 (CI + drift + ChangeSet-UPDATE + Skill audit).** Branch
+  protection on `w6d2-implementation` now requires the `cfn-lint +
+  cfn-nag + aws validate-template` status check (applied via the GitHub
+  API — see [CI gate](#ci-gate) above), so that piece is done. Still
+  not done, all for the same reason (no AWS account access):
+  `cfn-validate.yml` itself has not run in GitHub Actions yet (needs
   `secrets.AWS_ACCOUNT_ID` set and the OIDC role from Task 1 to exist
   first) — locally, the exact pinned versions it uses
   (`cfn-lint==1.10.3`, `cfn-nag 0.8.10`) were run against all four
-  templates: 0 lint errors, 0 nag `FAIL`s. Also not done: adding
-  `validate` as a required status check in the repo's branch protection
-  settings (a GitHub UI/API change, not something this PR's diff can
-  make); the drift drill in [Drift detection](#drift-detection) above —
-  adding a real tag via the S3 console, confirming `DRIFTED`, and
-  confirming the revert returns `IN_SYNC`; and the
+  templates: 0 lint errors, 0 nag `FAIL`s. Also not done: the drift
+  drill in [Drift detection](#drift-detection) above — adding a real tag
+  via the S3 console, confirming `DRIFTED`, and confirming the revert
+  returns `IN_SYNC`; and the
   [in-place UPDATE drill](#in-place-update-drill-task-4) above —
   confirming a real `create-change-set --change-set-type UPDATE` on
   `multistate-network-dev` comes back with `Replacement: False` on every
