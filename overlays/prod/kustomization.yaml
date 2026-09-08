@@ -1,0 +1,46 @@
+# overlays/prod/kustomization.yaml
+# Same shape as overlays/dev, with prod's own namespace, replica count,
+# and log verbosity.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namespace: multistate-prod
+
+images:
+  - name: uptimecrew/multistate-api
+    newTag: 0.1.0
+
+replicas:
+  - name: multistate-api
+    count: 3
+
+patches:
+  - target:
+      kind: Namespace
+      name: multistate-dev
+    patch: |-
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: multistate-dev
+        annotations:
+          argocd.argoproj.io/sync-wave: "-1"
+
+  - target:
+      kind: ConfigMap
+      name: multistate-api-config
+    patch: |-
+      - op: replace
+        path: /data/SPRING_PROFILES_ACTIVE
+        value: prod
+      - op: replace
+        path: /data/LOGGING_LEVEL_ROOT
+        value: WARN
+      # Same reasoning as overlays/dev -- this dev machine's local mongo
+      # publishes to host port 27018, not the default 27017.
+      - op: replace
+        path: /data/SPRING_DATA_MONGODB_URI
+        value: mongodb://host.k3d.internal:27018/multistate
