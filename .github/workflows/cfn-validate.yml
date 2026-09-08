@@ -35,7 +35,12 @@ jobs:
         # multistate-network-dev.yaml documents per-env scale hints for
         # operators/other IaC to reference; it's intentionally not
         # consumed via an intrinsic function in this template.
-        run: cfn-lint cfn/*.yaml --ignore-checks W3691 W7001
+        # W1020 (unnecessary Fn::Sub) is excluded: DbInstance's
+        # MasterUsername/MasterUserPassword wrap the
+        # {{resolve:secretsmanager:...}} dynamic reference in Fn::Sub for
+        # consistency even though this particular reference has no ${}
+        # variables to substitute.
+        run: cfn-lint cfn/*.yaml --ignore-checks W3691 W7001 W1020
 
   cfn-nag:
     runs-on: ubuntu-latest
