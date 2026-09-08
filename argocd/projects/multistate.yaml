@@ -1,51 +1,117 @@
 # argocd/projects/multistate.yaml
-# Narrow AppProject: no '*' wildcards anywhere. Task 2 expands the
-# namespace-resource whitelist as later manifests (ServiceMonitor,
-# AlertmanagerConfig, etc.) get added to base/.
+# AppProject scoping the multistate capstone team. The platform team
+# owns this file in practice; the app team proposes changes via PR.
+# Every Application in this repo has spec.project: multistate -- never
+# "default".
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
   name: multistate
   namespace: argocd
+  # Ensures Argo CD prunes generated Applications if this project itself
+  # is ever deleted -- a defence against orphaned workloads.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
 spec:
-  description: Multi-State Tax Compliance Tracker -- scoped GitOps project
+  description: multistate-api capstone -- GitOps overlays + observability
 
+  # WHICH repo may an Application in this project source from. Never a
+  # wildcard -- a wildcard sourceRepos is indistinguishable from leaving
+  # the project in "default" for security purposes.
   sourceRepos:
     - https://github.com/AI-Native-2026-07-29-Intuit/shravani-shilimkar-multistate-config.git
 
+  # WHICH (cluster, namespace) pairs are legal. Explicit three, never
+  # {server: '*', namespace: '*'}.
   destinations:
-    - namespace: multistate-dev
-      server: https://kubernetes.default.svc
-    - namespace: multistate-staging
-      server: https://kubernetes.default.svc
-    - namespace: multistate-prod
-      server: https://kubernetes.default.svc
+    - server: https://kubernetes.default.svc
+      namespace: multistate-dev
+    - server: https://kubernetes.default.svc
+      namespace: multistate-staging
+    - server: https://kubernetes.default.svc
+      namespace: multistate-prod
 
-  # Namespace is cluster-scoped in Argo CD's eyes even though
-  # base/00-namespace.yaml lives alongside namespaced resources -- an
-  # empty list here blocks it outright (confirmed: sync fails with
-  # "resource :Namespace is not permitted in project multistate").
-  # Everything else stays off this list; no other cluster-scoped kind
-  # is ever needed by this project.
+  # The app team has no business creating ClusterRoles, CRDs, or
+  # PersistentVolumes -- those are platform-team owned. Empty whitelist
+  # would be full deny, EXCEPT: Namespace is cluster-scoped in Argo CD's
+  # eyes even though base/00-namespace.yaml lives alongside namespaced
+  # resources, and this app's base genuinely declares one (unlike the
+  # deliverable's reference architecture, which apparently doesn't).
+  # Confirmed empty ([]) breaks real sync: "resource :Namespace is not
+  # permitted in project multistate". Namespace is the one exception;
+  # no other cluster-scoped kind is ever needed by this project.
   clusterResourceWhitelist:
     - group: ""
       kind: Namespace
 
-  # Only the namespace-scoped kinds the W5 D3 manifests actually use.
+  # Namespace-scoped kinds this project may manage. Ingress is added
+  # beyond the deliverable's illustrative list because base/app's own
+  # 60-multistate-api.ingress.yaml genuinely uses it; ServiceAccount,
+  # PodDisruptionBudget, NetworkPolicy, ServiceMonitor, and
+  # PrometheusRule are whitelisted ahead of base/ actually shipping them
+  # (kube-prometheus-stack's CRDs already exist in-cluster), so a future
+  # PR adding those manifests doesn't also require a second AppProject
+  # PR just to unblock its own sync.
   namespaceResourceWhitelist:
-    - group: ""
-      kind: ResourceQuota
-    - group: ""
-      kind: LimitRange
-    - group: ""
-      kind: ConfigMap
-    - group: ""
-      kind: Secret
-    - group: ""
-      kind: Service
-    - group: apps
-      kind: Deployment
-    - group: autoscaling
-      kind: HorizontalPodAutoscaler
-    - group: networking.k8s.io
-      kind: Ingress
+    - { group: "", kind: Service }
+    - { group: "", kind: ConfigMap }
+    - { group: "", kind: Secret }
+    - { group: "", kind: ServiceAccount }
+    - { group: apps, kind: Deployment }
+    - { group: autoscaling, kind: HorizontalPodAutoscaler }
+    - { group: policy, kind: PodDisruptionBudget }
+    - { group: networking.k8s.io, kind: Ingress }
+    - { group: networking.k8s.io, kind: NetworkPolicy }
+    - { group: monitoring.coreos.com, kind: ServiceMonitor }
+    - { group: monitoring.coreos.com, kind: PrometheusRule }
+
+  # Quota knobs are platform-owned, not app-team owned -- explicit deny
+  # even though base/00-namespace.yaml currently bundles both kinds
+  # alongside the Namespace object. See overlays/dev's header comment
+  # for the follow-up this forces on base/.
+  namespaceResourceBlacklist:
+    - { group: "", kind: ResourceQuota }
+    - { group: "", kind: LimitRange }
+
+  # Deny auto-sync to prod over the weekend. Manual sync still works
+  # (manualSync: true), so an on-call human isn't locked out during an
+  # actual incident -- a sync window that can never be overridden is a
+  # liability, not a guardrail. Curriculum convention; real change-freeze
+  # schedules are decided per team.
+  syncWindows:
+    - kind: deny
+      schedule: "0 17 * * 5" # Friday 17:00 UTC
+      duration: 60h # through Monday 05:00 UTC
+      applications:
+        - multistate-api-prod
+      manualSync: true
+
+  # Project-scoped RBAC -- two roles, not "any-developer-is-admin". No
+  # OIDC wired to Argo CD yet (the W6 D3 lesson covers that against the
+  # shared capstone cluster), so these group bindings are inert until
+  # then -- they document the intended shape now rather than later.
+  roles:
+    # Developers: read everything, sync dev and staging only. Cannot
+    # touch prod, cannot delete any Application.
+    - name: developers
+      description: Read everything; sync dev and staging only.
+      policies:
+        - p, proj:multistate:developers, applications, get, multistate/*, allow
+        - p, proj:multistate:developers, applications, sync, multistate/multistate-api-dev, allow
+        - p, proj:multistate:developers, applications, sync, multistate/multistate-api-staging, allow
+        - p, proj:multistate:developers, applications, delete, multistate/*, deny
+        - p, proj:multistate:developers, logs, get, multistate/*, allow
+      groups:
+        - uptimecrew:multistate-engineers
+    # Releasers: full sync including prod. Still bound by the project's
+    # allow-lists above -- this role can't grant itself access to
+    # anything the project itself doesn't permit.
+    - name: releasers
+      description: Full sync including prod. Cannot delete Applications.
+      policies:
+        - p, proj:multistate:releasers, applications, get, multistate/*, allow
+        - p, proj:multistate:releasers, applications, sync, multistate/*, allow
+        - p, proj:multistate:releasers, applications, action/*, multistate/*, allow
+        - p, proj:multistate:releasers, applications, delete, multistate/*, deny
+      groups:
+        - uptimecrew:multistate-engineers-releasers
