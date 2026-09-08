@@ -86,11 +86,14 @@ the data before executing.
 [`.github/workflows/cfn-validate.yml`](../.github/workflows/cfn-validate.yml)
 runs on every PR touching `cfn/`:
 
-- `cfn-lint` (>=1.20) — schema/intrinsic-function correctness. `W3691`
-  (RDS engine-version deprecation) is explicitly ignored: AWS retires
-  Postgres minor versions on its own cadence, faster than a CI pin can
-  track, and the real check for "is this version installable" is
-  `aws rds describe-db-engine-versions` at deploy time.
+- `cfn-lint` (>=1.20) — schema/intrinsic-function correctness. Two checks
+  are explicitly ignored: `W3691` (RDS engine-version deprecation) since
+  AWS retires Postgres minor versions on its own cadence, faster than a
+  CI pin can track, and the real check for "is this version installable"
+  is `aws rds describe-db-engine-versions` at deploy time; and `W7001`
+  (unused Mapping) for `EnvToReplicas` in `multistate-network-dev.yaml`,
+  which documents per-env scale hints for operators/other IaC rather than
+  being consumed by an intrinsic function inside this template.
 - `cfn-nag` (>=0.8.10) — security-posture scan. Zero `FAIL`s are required
   to merge; the accepted `WARN`s are listed below with rationale.
 - `aws cloudformation validate-template` — per-template syntax validation
@@ -106,8 +109,8 @@ template change is reviewed as a diff before it touches a real stack.
 | Rule | Resource | Why it's accepted |
 |---|---|---|
 | W33 | `PublicSubnet{A,B,C}` | `MapPublicIpOnLaunch: true` is the point of a public subnet; the private subnets (where the app and DB actually run) don't have it. |
-| W40 / W5 | `ApplicationSecurityGroup` egress | Egress is intentionally open; ingress is the restricted side (VPC-CIDR-only on port 8080). Private-subnet workloads still only reach the internet through the env's NAT gateway(s). |
-| W28 | `CfnDeployRole`, `AppIrsaRole`, `ApplicationSecurityGroup` | Names are pinned deliberately — the GitHub Actions trust policy and the Kubernetes IRSA ServiceAccount annotation both reference these names directly, so a CFN-generated random suffix would break the OIDC trust wiring on every stack recreate. |
+| W5 | `MultistateAppSecurityGroup` egress | Egress to `0.0.0.0/0` is restricted to port 443 only (HTTPS to ECR/STS/Secrets Manager) — ingress is the side that's actually locked down (VPC-CIDR-only on port 8080, no `0.0.0.0/0` ingress anywhere). |
+| W28 | `CfnDeployRole`, `AppIrsaRole`, `MultistateAppSecurityGroup` | Names are pinned deliberately — the GitHub Actions trust policy and the Kubernetes IRSA ServiceAccount annotation both reference these names directly, so a CFN-generated random suffix would break the OIDC trust wiring on every stack recreate. |
 | W35 | `BootstrapBucket`, `ArtifactBucket` | Access logging deferred: needs a dedicated log-target bucket this deliverable doesn't otherwise require. Tracked as a fast-follow, not shipped blocking this PR. |
 | W60 | `Vpc` | Flow logs deferred for the same reason — out of scope for the network topology this deliverable asks for. |
 
@@ -126,7 +129,7 @@ aws cloudformation describe-stack-resource-drifts \
   --stack-name multistate-network-dev
 ```
 
-Drill: a console edit to `ApplicationSecurityGroup` (e.g. adding an ad-hoc
+Drill: a console edit to `MultistateAppSecurityGroup` (e.g. adding an ad-hoc
 ingress rule to unblock a debugging session) shows up as
 `StackResourceDriftStatus: MODIFIED` with the added rule listed under
 `PropertyDifferences`. The fix is never "update the template to match
@@ -196,12 +199,22 @@ local static analysis (`cfn-lint`, `cfn-nag`) only. Concretely, per task:
   `BootstrapBucketName` + `CfnDeployRoleArn` present in `Outputs`. The
   exact commands are in [Deploy flow](#deploy-flow-changeset-every-time)
   above — run those against a real account to close this out.
-- **Tasks 2–3 (network, app, artifacts stacks).** Same pattern: templates
-  pass `cfn-lint`/`cfn-nag` locally; no stack has actually been created,
-  so the `!ImportValue` cross-stack wiring between
-  `multistate-network-dev` → `multistate-app-dev` and
-  `multistate-artifacts-dev` → `multistate-app-dev` has not been
-  exercised against real exports.
+- **Task 2 (network stack).** `cfn/multistate-network-dev.yaml` is
+  authored to the letter of the reference template and passes `cfn-lint`
+  (0 errors, `W7001` on the intentionally-unused `EnvToReplicas` Mapping
+  excluded) and `cfn-nag` (0 `FAIL`s). Not done: the
+  `create-change-set --change-set-type CREATE` → `execute-change-set`
+  sequence; confirming `describe-stacks --stack-name
+  multistate-network-dev` reaches `CREATE_COMPLETE`; confirming
+  `aws ec2 describe-vpcs` shows the `10.43.0.0/16` VPC; and confirming
+  `aws cloudformation list-exports` lists the four
+  `multistate-network-dev-*` exports (`VpcId`, `PublicSubnets`,
+  `PrivateSubnets`, `AppSgId`).
+- **Task 3 (app + artifacts stacks).** Same pattern: templates pass
+  `cfn-lint`/`cfn-nag` locally; no stack has actually been created, so the
+  `!ImportValue` cross-stack wiring between `multistate-network-dev` →
+  `multistate-app-dev` and `multistate-artifacts-dev` → `multistate-app-dev`
+  has not been exercised against real exports.
 - **Task 4 (CI + drift + Skill audit).** `cfn-validate.yml` has not run
   in GitHub Actions (needs the OIDC role from Task 1 to exist first);
   the drift drill in [Drift detection](#drift-detection) above describes

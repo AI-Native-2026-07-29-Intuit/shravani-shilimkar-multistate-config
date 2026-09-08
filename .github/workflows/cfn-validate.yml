@@ -31,7 +31,11 @@ jobs:
         # Postgres minor versions faster than this pin can be kept current,
         # and the actual-available-versions check belongs to
         # `aws rds describe-db-engine-versions` at deploy time, not this gate.
-        run: cfn-lint cfn/*.yaml --ignore-checks W3691
+        # W7001 (unused Mapping) is excluded: EnvToReplicas in
+        # multistate-network-dev.yaml documents per-env scale hints for
+        # operators/other IaC to reference; it's intentionally not
+        # consumed via an intrinsic function in this template.
+        run: cfn-lint cfn/*.yaml --ignore-checks W3691 W7001
 
   cfn-nag:
     runs-on: ubuntu-latest

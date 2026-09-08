@@ -78,7 +78,7 @@ Resources:
       MasterUserPassword: !Sub '{{resolve:secretsmanager:multistate/${EnvironmentName}/db-master:SecretString:password}}'
       DBSubnetGroupName: !Ref DbSubnetGroup
       VPCSecurityGroups:
-        - Fn::ImportValue: !Sub '${NetworkStackName}-ApplicationSecurityGroupId'
+        - Fn::ImportValue: !Sub '${NetworkStackName}-AppSgId'
       MultiAZ: false
       PubliclyAccessible: false
       BackupRetentionPeriod: 7
