@@ -1,0 +1,33 @@
+# External reach via the NGINX Ingress Controller (installed separately
+# from the official upstream manifest — this k3d/k3s version ships
+# Traefik by default, not NGINX, so ingress-nginx was installed and
+# Traefik removed to avoid both competing for the LoadBalancer's port
+# 80, which k3d's --port "8080:80@loadbalancer" flag routes to).
+# Use `ingressClassName` (NOT the deprecated annotation form).
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: multistate-api
+  namespace: multistate-dev
+  labels:
+    app.kubernetes.io/name:       multistate-api
+    app.kubernetes.io/component:  api
+    app.kubernetes.io/part-of:    multistate
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: multistate.dev.uptimecrew.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: multistate-api
+                port:
+                  number: 8080
