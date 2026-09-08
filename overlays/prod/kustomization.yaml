@@ -44,3 +44,14 @@ patches:
       - op: replace
         path: /data/SPRING_DATA_MONGODB_URI
         value: mongodb://host.k3d.internal:27018/multistate
+
+  # Same reasoning as overlays/staging -- base/60-multistate-api.ingress.yaml
+  # hardcodes the dev hostname, and nginx's admission webhook rejects a
+  # duplicate host+path cluster-wide.
+  - target:
+      kind: Ingress
+      name: multistate-api
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: multistate.prod.uptimecrew.internal
