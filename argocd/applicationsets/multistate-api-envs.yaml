@@ -18,6 +18,11 @@ spec:
   syncPolicy:
     preserveResourcesOnDeletion: true
 
+  # Go-template mode (not the default fasttemplate engine) -- required
+  # for templatePatch's {{if eq .env "prod"}} conditional below.
+  # Every {{param}} reference elsewhere in this file becomes {{.param}}.
+  goTemplate: true
+
   generators:
     - matrix:
         generators:
@@ -45,7 +50,7 @@ spec:
   template:
     metadata:
       # Application names must be unique; composed from the params.
-      name: multistate-api-{{env}}
+      name: multistate-api-{{.env}}
       namespace: argocd
       # No hardcoded finalizer here on purpose. The ApplicationSet
       # controller itself decides whether to add
@@ -63,21 +68,21 @@ spec:
         # apply). Within a single Application, the Namespace-before-
         # Deployment ordering lives on the Namespace resource itself
         # (see each overlay's Namespace-targeted patch).
-        argocd.argoproj.io/sync-wave: "{{wave}}"
+        argocd.argoproj.io/sync-wave: "{{.wave}}"
       labels:
-        env: "{{env}}"
+        env: "{{.env}}"
         team: multistate
     spec:
       project: multistate
       source:
         repoURL: https://github.com/AI-Native-2026-07-29-Intuit/shravani-shilimkar-multistate-config.git
-        path: "{{overlay}}"
+        path: "{{.overlay}}"
         # Tracking the feature branch until the PR merges -- flip to
         # `main` once w6d2-implementation lands.
         targetRevision: w6d2-implementation
       destination:
-        server: "{{server}}"
-        namespace: "{{namespace}}"
+        server: "{{.server}}"
+        namespace: "{{.namespace}}"
       syncPolicy:
         automated:
           prune: true
@@ -105,3 +110,20 @@ spec:
           name: multistate-api-secrets
           jsonPointers:
             - /data/SPRING_DATASOURCE_PASSWORD
+
+  # Prod-only exception: drop automated sync entirely (both prune and
+  # selfHeal), requiring a human to run `argocd app sync
+  # multistate-api-prod` for every promotion. dev/staging keep the
+  # automated stanza above unpatched. This was left as a to-do in
+  # GITOPS.md ("consider a templatePatch on env: prod to drop
+  # automated and require manual sync") until implemented here --
+  # a k3d cluster with no real users doesn't force the question, but
+  # a real prod should never auto-promote on every git push with no
+  # human in the loop. The weekend syncWindows deny block (Task 2)
+  # still applies on top of this for defense in depth.
+  templatePatch: |
+    {{- if eq .env "prod" }}
+    spec:
+      syncPolicy:
+        automated: null
+    {{- end }}
