@@ -84,6 +84,39 @@ line item to scrutinize on every PR — anything that resolves to `True` on
 `DeletionPolicy`/`UpdateReplacePolicy` will actually protect the data
 before executing.
 
+## In-place UPDATE drill (Task 4)
+
+Proves the ChangeSet flow's `Replacement` column actually distinguishes
+"modify in place" from "tear down and recreate." Pick a change to
+`multistate-network-dev.yaml` that CloudFormation can apply without
+replacing anything — e.g. renaming the `Project` tag value, or widening
+`VpcCidr`'s `AllowedPattern` (not the CIDR itself, which *would* force VPC
+replacement) — then run the same flow as any other update:
+
+```bash
+aws cloudformation create-change-set \
+  --stack-name multistate-network-dev \
+  --change-set-name network-tag-update \
+  --change-set-type UPDATE \
+  --template-body file://cfn/multistate-network-dev.yaml \
+  --region us-east-1
+
+aws cloudformation describe-change-set \
+  --stack-name multistate-network-dev --change-set-name network-tag-update \
+  --query 'Changes[].ResourceChange.{Resource:LogicalResourceId,Action:Action,Replacement:Replacement}' \
+  --output table
+# paste this table into the PR body
+
+aws cloudformation execute-change-set \
+  --stack-name multistate-network-dev --change-set-name network-tag-update
+```
+
+Expected: every row is `Action: Modify` with `Replacement: False`. Any
+row that comes back `Replacement: True` (or `Conditional`) is a stop sign
+— on this stack that would mean something like `VpcCidr` itself changing,
+which replaces `Vpc` and cascades into every subnet, route table, and NAT
+gateway depending on it.
+
 ## Cross-stack reference health check (Task 3)
 
 After `multistate-network-dev` and `multistate-app-dev` are both up,
@@ -115,25 +148,41 @@ network stack disappear while something still imports its outputs.
 ## CI gate
 
 [`.github/workflows/cfn-validate.yml`](../.github/workflows/cfn-validate.yml)
-runs on every PR touching `cfn/`:
+runs a single `validate` job, sequentially, on every PR touching `cfn/`
+(actions pinned by commit SHA, not tag, to close the supply-chain gap a
+mutable tag leaves open):
 
-- `cfn-lint` (>=1.20) — schema/intrinsic-function correctness. Two checks
-  are explicitly ignored: `W3691` (RDS engine-version deprecation) since
-  AWS retires Postgres minor versions on its own cadence, faster than a
-  CI pin can track, and the real check for "is this version installable"
-  is `aws rds describe-db-engine-versions` at deploy time; and `W7001`
-  (unused Mapping) for `EnvToReplicas` in `multistate-network-dev.yaml`,
-  which documents per-env scale hints for operators/other IaC rather than
-  being consumed by an intrinsic function inside this template.
-- `cfn-nag` (>=0.8.10) — security-posture scan. Zero `FAIL`s are required
-  to merge; the accepted `WARN`s are listed below with rationale.
-- `aws cloudformation validate-template` — per-template syntax validation
-  using the same `multistate-api-cfn-deploy` OIDC role the deploy job
-  uses, scoped read-only by the actions it's granted.
+- `cfn-lint==1.10.3` — schema/intrinsic-function correctness against all
+  four templates in one invocation. Three checks are explicitly ignored:
+  `W3691` (RDS engine-version deprecation) since AWS retires Postgres
+  minor versions on its own cadence, faster than a CI pin can track, and
+  the real check for "is this version installable" is
+  `aws rds describe-db-engine-versions` at deploy time; `W7001` (unused
+  Mapping) for `EnvToReplicas` in `multistate-network-dev.yaml`, which
+  documents per-env scale hints for operators/other IaC rather than being
+  consumed by an intrinsic function inside this template; and `W1020`
+  (unnecessary `Fn::Sub`) on `DbInstance`'s dynamic-reference credentials.
+- `cfn-nag 0.8.10` — security-posture scan across `cfn/`. No
+  `--fail-on-warnings`: several `WARN`s here are accepted, reasoned-through
+  risk (the table below), not oversights — failing the build on every
+  `WARN` would force silencing the scanner instead of reading its output.
+  Zero `FAIL`s is still a hard gate; `cfn_nag_scan` exits non-zero on any
+  `FAIL` regardless of the warning-tolerance setting.
+- `aws cloudformation validate-template` — one step per template (four
+  total), using the `multistate-api-cfn-deploy` role via OIDC — the same
+  role a real deploy job would use, but this workflow only ever calls the
+  read-only `validate-template` action, never `create-change-set` or
+  `execute-change-set`.
 
 This workflow only lints/validates. The actual `create-change-set` →
-`execute-change-set` flow is a separate, manually-triggered job so every
-template change is reviewed as a diff before it touches a real stack.
+`execute-change-set` flow is a separate, manually-triggered step (see
+[Deploy flow](#deploy-flow-changeset-every-time) above) so every template
+change is reviewed as a diff before it touches a real stack. `cfn-validate`
+is intended as a **required status check on `main`** — set that in the
+repo's branch protection settings (Settings → Branches → Branch protection
+rules → `main` → Require status checks → `validate`); that setting lives
+in GitHub's UI/API, not in the workflow YAML itself, so it's a one-time
+manual step for a repo admin, not something this PR's diff can carry.
 
 ### Accepted cfn-nag WARNs
 
@@ -152,21 +201,38 @@ during authoring (see audit notes below).
 ## Drift detection
 
 ```bash
-aws cloudformation detect-stack-drift --stack-name multistate-network-dev
+aws cloudformation detect-stack-drift --stack-name multistate-artifacts-dev
 # poll:
 aws cloudformation describe-stack-drift-detection-status \
   --stack-drift-detection-id <id-from-above>
 # once StackDriftStatus is IN_SYNC or DRIFTED:
 aws cloudformation describe-stack-resource-drifts \
-  --stack-name multistate-network-dev
+  --stack-name multistate-artifacts-dev \
+  --query "StackResourceDrifts[?StackResourceDriftStatus!='IN_SYNC']"
 ```
 
-Drill: a console edit to `MultistateAppSecurityGroup` (e.g. adding an ad-hoc
-ingress rule to unblock a debugging session) shows up as
-`StackResourceDriftStatus: MODIFIED` with the added rule listed under
-`PropertyDifferences`. The fix is never "update the template to match
-the drift" — it's `execute-change-set` on the existing template, which
-reverts the console edit and closes the gap it opened.
+**Task 4 drill:** add a tag to `MultistateArtifactsBucket` directly in the
+S3 console (a stand-in for the "someone hotfixed prod through the
+console" scenario). Expected `describe-stack-resource-drifts` output —
+the 4-6 lines that go in the PR body:
+
+```json
+[
+  {
+    "StackResourceDriftStatus": "MODIFIED",
+    "LogicalResourceId": "MultistateArtifactsBucket",
+    "PropertyDifferences": [
+      {"PropertyPath": "/Tags/2", "ExpectedValue": null, "ActualValue": "{\"Key\":\"...\",\"Value\":\"...\"}", "DifferenceType": "ADD"}
+    ]
+  }
+]
+```
+
+The fix is never "update the template to match the drift" — revert the
+console edit (remove the tag) and re-run `detect-stack-drift`; it should
+report back `StackDriftStatus: IN_SYNC`. If the drift were something
+worth keeping, the correct move is still to add it to the template and
+run it through a ChangeSet, not to leave the console the source of truth.
 
 ## Audit: cfn-author Skill output vs. the cohort checklist
 
@@ -177,18 +243,22 @@ the checklist and the concrete failure modes it guards against here, since
 that's the artefact Task 4 actually asks for regardless of which path
 produced the first draft:
 
-- **OIDC trust policy: `StringEquals` on `aud`, `StringLike` scoped to
-  the exact repo — never a wildcard org/repo.** `CfnDeployRole`'s trust
-  policy (`multistate-bootstrap-dev.yaml`) pins `aud` with `StringEquals`
-  and `sub` with `StringLike` against exactly two patterns:
-  `repo:uptimecrew/multistate-config:ref:refs/heads/main` and
-  `repo:uptimecrew/multistate-config:pull_request`. A cohort-common
-  mistake is a broader `sub` pattern like `repo:uptimecrew/*` "to cover
-  future repos" — that lets any repo in the org assume the deploy role.
-  (No IRSA role exists in this stack set yet — that lands on W6 D5 when
-  the app pod's ServiceAccount is wired up; the equivalent
-  `StringEquals`-not-`StringLike` audit point applies there, on the `sub`
-  claim's namespace:service-account subject specifically.)
+- **OIDC trust policy: `StringEquals` on `aud` — never `StringLike`,
+  even though `sub` legitimately needs it.** `CfnDeployRole`'s trust
+  policy (`multistate-bootstrap-dev.yaml`) uses `StringEquals` on
+  `token.actions.githubusercontent.com:aud: sts.amazonaws.com` — that
+  claim is a single fixed value, so `StringLike` there buys nothing and
+  is the exact "sometimes ships `StringLike` on the aud claim" quirk this
+  audit step exists to catch. `sub`, by contrast, correctly uses
+  `StringLike` because it legitimately needs to match two patterns
+  (`repo:uptimecrew/multistate-config:ref:refs/heads/main` and
+  `:pull_request`) — the audit distinction isn't "StringLike is always
+  wrong," it's "StringLike only where the claim actually varies, and
+  scoped to the exact repo, never a wildcard org/repo like
+  `repo:uptimecrew/*`." (No IRSA role exists in this stack set yet — that
+  lands on W6 D5 when the app pod's ServiceAccount is wired up; the same
+  StringEquals-on-fixed-claims discipline applies there, on both `aud`
+  and the exact namespace:service-account `sub` subject.)
 - **DB credentials: Secrets Manager, never `NoEcho: true` Parameter.**
   `DbMasterSecret` (`multistate-app-dev.yaml`) is a
   `AWS::SecretsManager::Secret` with `GenerateSecretString` — CFN never
@@ -280,12 +350,24 @@ local static analysis (`cfn-lint`, `cfn-nag`) only. Concretely, per task:
   wiring between `multistate-network-dev` → `multistate-app-dev` (on
   `VpcId`, `PrivateSubnets`, `AppSgId`) has therefore not been exercised
   against real exports either.
-- **Task 4 (CI + drift + Skill audit).** `cfn-validate.yml` has not run
-  in GitHub Actions (needs the OIDC role from Task 1 to exist first);
-  the drift drill in [Drift detection](#drift-detection) above describes
-  the expected `detect-stack-drift` behavior but was not run against a
-  live console edit. The Skill-output audit itself is unaffected by AWS
-  access — that section stands as-is.
+- **Task 4 (CI + drift + ChangeSet-UPDATE + Skill audit).**
+  `cfn-validate.yml` has not run in GitHub Actions (needs
+  `secrets.AWS_ACCOUNT_ID` set and the OIDC role from Task 1 to exist
+  first) — locally, the exact pinned versions it uses
+  (`cfn-lint==1.10.3`, `cfn-nag 0.8.10`) were run against all four
+  templates: 0 lint errors, 0 nag `FAIL`s. Also not done: adding
+  `validate` as a required status check in the repo's branch protection
+  settings (a GitHub UI/API change, not something this PR's diff can
+  make); the drift drill in [Drift detection](#drift-detection) above —
+  adding a real tag via the S3 console, confirming `DRIFTED`, and
+  confirming the revert returns `IN_SYNC`; and the
+  [in-place UPDATE drill](#in-place-update-drill-task-4) above —
+  confirming a real `create-change-set --change-set-type UPDATE` on
+  `multistate-network-dev` comes back with `Replacement: False` on every
+  row. The Skill-output audit itself is unaffected by AWS access — the
+  `cfn-author` Skill was not available in this environment (see below),
+  so the audit was performed by hand-authoring against the same
+  checklist instead.
 
 Once a real account is available: deploy the bootstrap stack first (it's
 the trust anchor everything else assumes), confirm its `Outputs`, then
