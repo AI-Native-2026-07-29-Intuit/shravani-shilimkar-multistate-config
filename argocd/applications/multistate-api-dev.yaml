@@ -22,7 +22,9 @@ spec:
   source:
     repoURL: https://github.com/AI-Native-2026-07-29-Intuit/shravani-shilimkar-multistate-config.git
     path: overlays/dev
-    targetRevision: main
+    # Tracking the feature branch until the PR merges -- flip to `main`
+    # once w6d2-implementation lands.
+    targetRevision: w6d2-implementation
 
   destination:
     server: https://kubernetes.default.svc
@@ -45,3 +47,17 @@ spec:
         duration: 10s
         factor: 2
         maxDuration: 3m
+
+  # multistate-api-secrets ships a committed placeholder password
+  # (base/40-multistate-api.secret.yaml) that can never authenticate
+  # against a real Postgres. The real dev-local password gets set
+  # directly on the live Secret (kubectl patch, never committed to this
+  # public repo) -- without this ignoreDifferences, selfHeal reverts it
+  # back to the placeholder on every reconcile and every pod
+  # CrashLoopBackOffs on auth failure.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: multistate-api-secrets
+      jsonPointers:
+        - /data/SPRING_DATASOURCE_PASSWORD
