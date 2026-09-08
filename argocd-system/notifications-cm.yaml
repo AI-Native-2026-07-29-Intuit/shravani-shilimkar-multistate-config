@@ -1,0 +1,78 @@
+# argocd-system/notifications-cm.yaml
+# Wires argocd-notifications-controller to Slack. The webhook URL is held
+# in argocd-notifications-secret (kubectl create secret generic
+# argocd-notifications-secret --from-literal=slack-token=...), created
+# out-of-band by the platform team -- never committed here. This
+# ConfigMap declares only the triggers, templates, and the named service
+# that resolves that secret.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-notifications-cm
+  namespace: argocd
+data:
+  # ----- Where to deliver notifications -----
+  service.slack: |
+    token: $slack-token
+
+  # ----- Triggers (when to fire) -----
+  trigger.on-sync-failed: |
+    - description: Application sync failed.
+      send: [app-sync-failed]
+      when: app.status.operationState.phase in ['Error', 'Failed']
+
+  trigger.on-health-degraded: |
+    - description: Application health degraded.
+      send: [app-health-degraded]
+      when: app.status.health.status == 'Degraded'
+
+  # NOTE: on-sync-succeeded is DELIBERATELY omitted. Subscribing every
+  # Application to it produces a deploy-firehose that humans learn to
+  # mute -- and once muted, they miss the failures too. Alert on bad
+  # outcomes only; rely on git history + the Argo CD UI for "what
+  # deployed when."
+
+  # ----- Templates (how to render) -----
+  template.app-sync-failed: |
+    message: |
+      {{.app.metadata.name}} sync FAILED at {{.app.status.operationState.finishedAt}}.
+      Project:  {{.app.spec.project}}
+      Revision: {{.app.status.operationState.syncResult.revision}}
+      Phase:    {{.app.status.operationState.phase}}
+      Message:  {{.app.status.operationState.message}}
+    slack:
+      attachments: |
+        [{
+          "title":  "{{.app.metadata.name}} sync failed",
+          "color":  "#E96D76",
+          "fields": [
+            {"title": "Project",  "value": "{{.app.spec.project}}",  "short": true},
+            {"title": "Revision", "value": "{{.app.status.operationState.syncResult.revision}}", "short": true}
+          ]
+        }]
+
+  template.app-health-degraded: |
+    message: |
+      {{.app.metadata.name}} health is DEGRADED.
+      Project: {{.app.spec.project}}
+      Status:  {{.app.status.health.status}}
+      Message: {{.app.status.health.message}}
+    slack:
+      attachments: |
+        [{
+          "title":  "{{.app.metadata.name}} health degraded",
+          "color":  "#F2C744",
+          "fields": [
+            {"title": "Status",  "value": "{{.app.status.health.status}}",  "short": true},
+            {"title": "Message", "value": "{{.app.status.health.message}}", "short": false}
+          ]
+        }]
+
+  # ----- Default subscriptions -----
+  # Every Application labelled team=multistate (all three envs, see
+  # argocd/applicationsets/multistate-api-envs.yaml's template.metadata.labels)
+  # routes to #multistate-deploys for both triggers.
+  subscriptions: |
+    - recipients: [slack:multistate-deploys]
+      triggers: [on-sync-failed, on-health-degraded]
+      selector: "team=multistate"
