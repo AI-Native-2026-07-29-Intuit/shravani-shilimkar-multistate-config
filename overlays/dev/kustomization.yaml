@@ -52,3 +52,14 @@ patches:
       - op: replace
         path: /data/SPRING_DATA_MONGODB_URI
         value: mongodb://host.k3d.internal:27018/multistate
+
+  # TEST: deliberate on-sync-failed drill (Task 4) -- collides with
+  # prod's Ingress host on purpose. Revert immediately after verifying
+  # the notification fires.
+  - target:
+      kind: Ingress
+      name: multistate-api
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: multistate.prod.uptimecrew.internal
