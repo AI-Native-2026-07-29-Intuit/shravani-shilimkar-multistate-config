@@ -44,3 +44,16 @@ patches:
       - op: replace
         path: /data/SPRING_DATA_MONGODB_URI
         value: mongodb://host.k3d.internal:27018/multistate
+
+  # base/60-multistate-api.ingress.yaml hardcodes the dev hostname.
+  # nginx's admission webhook rejects two Ingress objects claiming the
+  # same host+path cluster-wide (confirmed: staging's first sync
+  # failed with "host ... is already defined in ingress
+  # multistate-dev/multistate-api"), so each overlay needs its own.
+  - target:
+      kind: Ingress
+      name: multistate-api
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: multistate.staging.uptimecrew.internal
