@@ -1,0 +1,22 @@
+# Stable in-cluster name. ClusterIP only — external traffic comes through
+# the Ingress (Task 3); this Service does not own the shared LoadBalancer.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: multistate-api
+  namespace: multistate-dev
+  labels:
+    app.kubernetes.io/name:       multistate-api
+    app.kubernetes.io/component:  api
+    app.kubernetes.io/part-of:    multistate
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: multistate-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

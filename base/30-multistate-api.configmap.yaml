@@ -1,0 +1,46 @@
+# Non-secret env. Plain key/value pairs; anything sensitive belongs in
+# the Secret, never here.
+#
+# Hostnames: the lesson's reference shape uses in-cluster Service DNS
+# (<svc>.multistate-dev.svc.cluster.local), which assumes Postgres/Redis/
+# Kafka/Mongo run as Services inside this namespace. This deliverable's
+# manifest tree has no such Services — those dependencies run via the
+# W5 D2 Compose stack on the host instead — so these values point at
+# host.k3d.internal (k3d's DNS alias for the docker host), which is what
+# actually resolves in this cluster.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: multistate-api-config
+  namespace: multistate-dev
+  labels:
+    app.kubernetes.io/name:       multistate-api
+    app.kubernetes.io/component:  api
+    app.kubernetes.io/part-of:    multistate
+    app.kubernetes.io/managed-by: kubectl
+data:
+  SPRING_PROFILES_ACTIVE:         k8s
+  LOGGING_LEVEL_ROOT:             INFO
+  SERVER_PORT:                    "8080"
+  SPRING_DATASOURCE_URL:          jdbc:postgresql://host.k3d.internal:5432/multistate_dev
+  SPRING_DATASOURCE_USERNAME:     multistate_dev
+  SPRING_DATA_REDIS_HOST:         host.k3d.internal
+  SPRING_DATA_REDIS_PORT:         "6379"
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: host.k3d.internal:9092
+  # Not in the lesson's reference list, but required: this app's Mongo
+  # repositories run auto-index-creation eagerly at boot (application.yml),
+  # so without an override it hard-crashes trying localhost:27017.
+  #
+  # NEVER hardcode Mongo credentials here: CI's k8s-ci.yml runs this exact
+  # ConfigMap against a fresh, auth-disabled `mongo:7` GitHub Actions service
+  # container - a credential-embedded URI makes the driver attempt SCRAM
+  # auth against a user that doesn't exist there and fails outright (broke
+  # CI, confirmed 2026-09-02). If your own local Mongo container has drifted
+  # into requiring auth (e.g. a stale MONGO_INITDB_ROOT_* left over from an
+  # earlier, unrelated session), fix that container - `docker compose down -v`
+  # for the mongo service and let it restart fresh - rather than baking
+  # personal-environment credentials into this shared, CI-exercised file.
+  SPRING_DATA_MONGODB_URI:        mongodb://host.k3d.internal:27017/multistate
+  OTEL_EXPORTER_OTLP_ENDPOINT:    http://host.k3d.internal:4317
+  OTEL_SERVICE_NAME:              multistate-api

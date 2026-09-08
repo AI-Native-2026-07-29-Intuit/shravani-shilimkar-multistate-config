@@ -1,0 +1,46 @@
+# argocd/projects/multistate.yaml
+# Narrow AppProject: no '*' wildcards anywhere. Task 2 expands the
+# namespace-resource whitelist as later manifests (ServiceMonitor,
+# AlertmanagerConfig, etc.) get added to base/.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: multistate
+  namespace: argocd
+spec:
+  description: Multi-State Tax Compliance Tracker -- scoped GitOps project
+
+  sourceRepos:
+    - https://github.com/AI-Native-2026-07-29-Intuit/shravani-shilimkar-multistate-config.git
+
+  destinations:
+    - namespace: multistate-dev
+      server: https://kubernetes.default.svc
+    - namespace: multistate-staging
+      server: https://kubernetes.default.svc
+    - namespace: multistate-prod
+      server: https://kubernetes.default.svc
+
+  # Empty: this project must never create/modify cluster-scoped resources.
+  clusterResourceWhitelist: []
+
+  # Only the kinds the W5 D3 manifests actually use.
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: ""
+      kind: ResourceQuota
+    - group: ""
+      kind: LimitRange
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: Secret
+    - group: ""
+      kind: Service
+    - group: apps
+      kind: Deployment
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+    - group: networking.k8s.io
+      kind: Ingress
