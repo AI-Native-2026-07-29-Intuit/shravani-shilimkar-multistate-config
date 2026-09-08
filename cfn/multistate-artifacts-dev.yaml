@@ -12,6 +12,7 @@ Parameters:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
+    Description: Deployment environment; carried only as a resource tag on this stack.
 
 Resources:
   MultistateArtifactsBucket:

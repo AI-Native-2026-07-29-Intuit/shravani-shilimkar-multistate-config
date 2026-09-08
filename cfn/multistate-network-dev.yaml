@@ -30,7 +30,10 @@ Mappings:
 Conditions:
   # IsDev: only dev gets a single NAT GW. Staging/prod get one per AZ.
   IsDev: !Equals [!Ref EnvName, dev]
-  IsHA:  !Not    [!Equals [!Ref EnvName, dev]]
+  # IsProdLike: gates NAT-per-AZ (HA) resources -- staging and prod both
+  # get one NAT GW per AZ so a single AZ outage doesn't take out every
+  # private subnet's egress; dev deliberately doesn't (cost discipline).
+  IsProdLike: !Not [!Equals [!Ref EnvName, dev]]
 
 Resources:
   Vpc:
@@ -127,24 +130,24 @@ Resources:
 
   NatEipB:
     Type: AWS::EC2::EIP
-    Condition: IsHA
+    Condition: IsProdLike
     DependsOn: IgwAttachment
     Properties: {Domain: vpc}
   NatGatewayB:
     Type: AWS::EC2::NatGateway
-    Condition: IsHA
+    Condition: IsProdLike
     Properties:
       AllocationId: !GetAtt NatEipB.AllocationId
       SubnetId:     !Ref PublicSubnetB
 
   NatEipC:
     Type: AWS::EC2::EIP
-    Condition: IsHA
+    Condition: IsProdLike
     DependsOn: IgwAttachment
     Properties: {Domain: vpc}
   NatGatewayC:
     Type: AWS::EC2::NatGateway
-    Condition: IsHA
+    Condition: IsProdLike
     Properties:
       AllocationId: !GetAtt NatEipC.AllocationId
       SubnetId:     !Ref PublicSubnetC
@@ -187,18 +190,18 @@ Resources:
 
   PrivateRouteTableB:
     Type: AWS::EC2::RouteTable
-    Condition: IsHA
+    Condition: IsProdLike
     Properties: {VpcId: !Ref Vpc}
   PrivateDefaultRouteB:
     Type: AWS::EC2::Route
-    Condition: IsHA
+    Condition: IsProdLike
     Properties:
       RouteTableId:         !Ref PrivateRouteTableB
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId:         !Ref NatGatewayB
   PrivateAssocBHA:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Condition: IsHA
+    Condition: IsProdLike
     Properties: {SubnetId: !Ref PrivateSubnetB, RouteTableId: !Ref PrivateRouteTableB}
   # In dev: route B through the single NAT (A).
   PrivateAssocBDev:
@@ -208,18 +211,18 @@ Resources:
 
   PrivateRouteTableC:
     Type: AWS::EC2::RouteTable
-    Condition: IsHA
+    Condition: IsProdLike
     Properties: {VpcId: !Ref Vpc}
   PrivateDefaultRouteC:
     Type: AWS::EC2::Route
-    Condition: IsHA
+    Condition: IsProdLike
     Properties:
       RouteTableId:         !Ref PrivateRouteTableC
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId:         !Ref NatGatewayC
   PrivateAssocCHA:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Condition: IsHA
+    Condition: IsProdLike
     Properties: {SubnetId: !Ref PrivateSubnetC, RouteTableId: !Ref PrivateRouteTableC}
   PrivateAssocCDev:
     Type: AWS::EC2::SubnetRouteTableAssociation

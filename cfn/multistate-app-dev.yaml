@@ -15,6 +15,7 @@ Parameters:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
+    Description: Deployment environment; selects the DB subnet group's tags and secret path.
   NetworkStackName:
     Type: String
     Default: multistate-network-dev
@@ -23,6 +24,7 @@ Parameters:
     Type: String
     Default: db.t4g.small
     AllowedValues: [db.t4g.small, db.t4g.medium, db.m6g.large]
+    Description: RDS instance class; t4g.small is dev-sized, m6g.large is the staging/prod ceiling.
 
 Resources:
   # --- Secrets Manager secret: the DB master credentials.
