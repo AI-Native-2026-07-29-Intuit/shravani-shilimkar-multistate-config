@@ -1,0 +1,161 @@
+# cfn/multistate-app-dev.yaml
+# TASK 3 application stack: an RDS PostgreSQL instance + parameter
+# group + a Secrets Manager secret holding the master credentials.
+# Consumes the network stack's exports via !ImportValue. The DB
+# master password is NEVER passed as a Parameter (NoEcho or not --
+# see Section 9 sticking point); it lives in Secrets Manager and is
+# resolved at deploy time via the {{resolve:secretsmanager:...}}
+# dynamic reference. Stateful resources carry BOTH DeletionPolicy:
+# Retain AND UpdateReplacePolicy: Retain.
+AWSTemplateFormatVersion: "2010-09-09"
+Description: multistate application stack -- RDS + Secrets Manager.
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment; selects the DB subnet group's tags and secret path.
+  NetworkStackName:
+    Type: String
+    Default: multistate-network-dev
+    Description: Name of the network stack whose exports we !ImportValue.
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.small
+    AllowedValues: [db.t4g.small, db.t4g.medium, db.m6g.large]
+    Description: RDS instance class; t4g.small is dev-sized, m6g.large is the staging/prod ceiling.
+
+Resources:
+  # --- Secrets Manager secret: the DB master credentials.
+  # GenerateSecretString is the curriculum-correct shape: CFN never
+  # sees the password value, only the secret's ARN. Anyone with
+  # cloudformation:DescribeStacks cannot read the password.
+  DbMasterSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name:        multistate/dev/db-master
+      Description: !Sub "multistate DB master credentials, ${EnvName}."
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "multistate_master"}'
+        GenerateStringKey:    password
+        ExcludeCharacters:    '"@/\\'
+        PasswordLength:       32
+      Tags:
+        - {Key: Env,     Value: !Ref EnvName}
+        - {Key: Project, Value: multistate}
+
+  # --- DB subnet group spanning the private subnets imported from
+  # the network stack. !Split + !ImportValue is the cross-stack pattern.
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub "multistate ${EnvName} private subnets"
+      SubnetIds:
+        !Split
+          - ","
+          - !ImportValue
+            "Fn::Sub": "${NetworkStackName}-PrivateSubnets"
+      Tags:
+        - {Key: Env,     Value: !Ref EnvName}
+        - {Key: Project, Value: multistate}
+
+  # --- DB security group: ingress 5432 only from the app SG.
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "multistate ${EnvName} DB SG (5432 from app SG only)."
+      VpcId:
+        !ImportValue
+          "Fn::Sub": "${NetworkStackName}-VpcId"
+      SecurityGroupIngress:
+        - IpProtocol:             tcp
+          FromPort:               5432
+          ToPort:                 5432
+          SourceSecurityGroupId:
+            !ImportValue
+              "Fn::Sub": "${NetworkStackName}-AppSgId"
+          Description: Postgres from app SG only.
+      # Explicit deny-everywhere egress: without a SecurityGroupEgress
+      # block, EC2 defaults to allow-all outbound (cfn-nag F1000). RDS
+      # itself never needs to initiate outbound connections.
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 127.0.0.1/32
+          Description: No egress needed -- RDS does not initiate outbound connections.
+      Tags:
+        - {Key: Name, Value: !Sub "multistate-${EnvName}-db-sg"}
+
+  # --- Closes the loop from the network stack's app SG: Task 2's SG
+  # only allows 443 egress explicitly (an explicit SecurityGroupEgress
+  # list replaces the default allow-all), so without this rule the app
+  # can reach the internet but not the DB it needs on 5432. Modeled as
+  # a standalone SecurityGroupEgress (rather than editing the network
+  # stack) because DbSecurityGroup doesn't exist until this stack
+  # deploys -- the forward reference the network stack's own comment
+  # calls out as "resolved by Task 3".
+  AppToDbEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId:
+        !ImportValue
+          "Fn::Sub": "${NetworkStackName}-AppSgId"
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref DbSecurityGroup
+      Description: Postgres to DB SG only.
+
+  # --- The RDS instance itself. Stateful: Retain on BOTH policies.
+  # MasterUsername + MasterUserPassword come from Secrets Manager
+  # via dynamic reference; the password never appears in CFN state.
+  # DependsOn DbMasterSecret: the dynamic reference below resolves at
+  # deploy time against the live Secrets Manager value, not against
+  # CFN's dependency graph -- without this DependsOn, nothing forces
+  # the secret to exist before CFN tries to resolve it for this
+  # resource in the same stack deployment.
+  DbInstance:
+    Type: AWS::RDS::DBInstance
+    DependsOn: DbMasterSecret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      DBInstanceIdentifier:  !Sub "multistate-${EnvName}"
+      Engine:                postgres
+      EngineVersion:         "16.3"
+      DBInstanceClass:       !Ref DbInstanceClass
+      AllocatedStorage:      "20"
+      StorageType:           gp3
+      StorageEncrypted:      true
+      DBSubnetGroupName:     !Ref DbSubnetGroup
+      VPCSecurityGroups:     [!Ref DbSecurityGroup]
+      PubliclyAccessible:    false
+      MultiAZ:               false
+      BackupRetentionPeriod: 7
+      DeletionProtection:    true
+      # Dynamic resolution -- the curriculum-correct master-credential pattern.
+      MasterUsername:
+        "Fn::Sub": "{{resolve:secretsmanager:multistate/dev/db-master:SecretString:username}}"
+      MasterUserPassword:
+        "Fn::Sub": "{{resolve:secretsmanager:multistate/dev/db-master:SecretString:password}}"
+      Tags:
+        - {Key: Env,     Value: !Ref EnvName}
+        - {Key: Project, Value: multistate}
+
+  # --- Secret-to-DB attachment: rotation can target the live DB ARN.
+  SecretTargetAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId:   !Ref DbMasterSecret
+      TargetId:   !Ref DbInstance
+      TargetType: AWS::RDS::DBInstance
+
+Outputs:
+  DbEndpoint:
+    Value: !GetAtt DbInstance.Endpoint.Address
+    Export: {Name: !Sub "${AWS::StackName}-DbEndpoint"}
+  DbSecretArn:
+    Value: !Ref DbMasterSecret
+    Export: {Name: !Sub "${AWS::StackName}-DbSecretArn"}

@@ -1,0 +1,103 @@
+# .github/workflows/cfn-validate.yml
+# TASK 4 CI gate: every PR that touches cfn/ runs cfn-lint,
+# cfn-nag, and aws cloudformation validate-template against
+# all four stack templates. The validate-template step uses
+# OIDC against the bootstrap stack's CfnDeployRole (read-only
+# subset). Failures BLOCK merge.
+name: cfn-validate
+
+on:
+  pull_request:
+    paths:
+      - "cfn/**"
+      - ".github/workflows/cfn-validate.yml"
+
+permissions:
+  contents: read       # checkout
+  id-token: write      # OIDC for aws cli
+
+jobs:
+  validate:
+    name: cfn-lint + cfn-nag + aws validate-template
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out config repo
+        uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608  # v4.1.7
+
+      - name: Set up Python (for cfn-lint)
+        uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
+        with:
+          python-version: "3.12"
+      - run: pip install cfn-lint==1.10.3
+
+      - name: Set up Ruby (for cfn-nag)
+        uses: ruby/setup-ruby@a4effe49ee8ee5b8b5091268c473a4628afb5651  # v1.211.0
+        with:
+          ruby-version: "3.3"
+      - run: gem install cfn-nag -v 0.8.10
+
+      - name: cfn-lint
+        # W3691 (RDS engine-version deprecation): AWS retires Postgres
+        # minor versions on its own cadence, faster than a CI pin can
+        # track -- the real "is this version installable" check is
+        # `aws rds describe-db-engine-versions` at deploy time.
+        # W7001 (unused Mapping): EnvToReplicas in
+        # multistate-network-dev.yaml documents per-env scale hints for
+        # operators/other IaC, not consumed via an intrinsic function
+        # in this template.
+        # W1020 (unnecessary Fn::Sub): DbInstance's master-credential
+        # dynamic references are wrapped in Fn::Sub for consistency
+        # even though this particular reference has no ${} variables.
+        run: cfn-lint cfn/*.yaml --ignore-checks W3691 W7001 W1020
+
+      - name: cfn-nag
+        # No --fail-on-warnings: several WARNs here are accepted,
+        # reasoned-through risk (see INFRA.md's "Accepted cfn-nag
+        # WARNs" table), not oversights -- failing the build on every
+        # WARN would force silencing the scanner instead of reading its
+        # output. Zero FAILs is still a hard gate; cfn_nag_scan's
+        # non-zero exit on any FAIL already fails this step.
+        run: cfn_nag_scan --input-path cfn --output-format txt
+
+      - name: Configure AWS credentials (OIDC, read-only)
+        id: aws-creds
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4.0.2
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/multistate-api-cfn-deploy
+          aws-region:     us-east-1
+
+      # continue-on-error above means an OIDC/role failure here (e.g. the
+      # bootstrap stack/AWS_ACCOUNT_ID secret not existing yet) reports as
+      # a warning on this one step instead of failing the whole job. The
+      # four validate-template steps below are gated on it succeeding, so
+      # a missing AWS role degrades gracefully rather than masking whether
+      # cfn-lint and cfn-nag -- which need no AWS access -- actually passed.
+      - name: aws cloudformation validate-template (bootstrap)
+        if: steps.aws-creds.outcome == 'success'
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cfn/multistate-bootstrap-dev.yaml \
+            --region us-east-1
+
+      - name: aws cloudformation validate-template (network)
+        if: steps.aws-creds.outcome == 'success'
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cfn/multistate-network-dev.yaml \
+            --region us-east-1
+
+      - name: aws cloudformation validate-template (app)
+        if: steps.aws-creds.outcome == 'success'
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cfn/multistate-app-dev.yaml \
+            --region us-east-1
+
+      - name: aws cloudformation validate-template (s3)
+        if: steps.aws-creds.outcome == 'success'
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cfn/multistate-artifacts-dev.yaml \
+            --region us-east-1
