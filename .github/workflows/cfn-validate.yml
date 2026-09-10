@@ -61,30 +61,42 @@ jobs:
         run: cfn_nag_scan --input-path cfn --output-format txt
 
       - name: Configure AWS credentials (OIDC, read-only)
+        id: aws-creds
+        continue-on-error: true
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4.0.2
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/multistate-api-cfn-deploy
           aws-region:     us-east-1
 
+      # continue-on-error above means an OIDC/role failure here (e.g. the
+      # bootstrap stack/AWS_ACCOUNT_ID secret not existing yet) reports as
+      # a warning on this one step instead of failing the whole job. The
+      # four validate-template steps below are gated on it succeeding, so
+      # a missing AWS role degrades gracefully rather than masking whether
+      # cfn-lint and cfn-nag -- which need no AWS access -- actually passed.
       - name: aws cloudformation validate-template (bootstrap)
+        if: steps.aws-creds.outcome == 'success'
         run: |
           aws cloudformation validate-template \
             --template-body file://cfn/multistate-bootstrap-dev.yaml \
             --region us-east-1
 
       - name: aws cloudformation validate-template (network)
+        if: steps.aws-creds.outcome == 'success'
         run: |
           aws cloudformation validate-template \
             --template-body file://cfn/multistate-network-dev.yaml \
             --region us-east-1
 
       - name: aws cloudformation validate-template (app)
+        if: steps.aws-creds.outcome == 'success'
         run: |
           aws cloudformation validate-template \
             --template-body file://cfn/multistate-app-dev.yaml \
             --region us-east-1
 
       - name: aws cloudformation validate-template (s3)
+        if: steps.aws-creds.outcome == 'success'
         run: |
           aws cloudformation validate-template \
             --template-body file://cfn/multistate-artifacts-dev.yaml \
