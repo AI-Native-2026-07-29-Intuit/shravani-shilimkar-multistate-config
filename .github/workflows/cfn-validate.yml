@@ -1,9 +1,9 @@
 # .github/workflows/cfn-validate.yml
-# TASK 4 CI gate: every PR that touches cfn/ runs cfn-lint,
-# cfn-nag, and aws cloudformation validate-template against
-# all four stack templates. The validate-template step uses
-# OIDC against the bootstrap stack's CfnDeployRole (read-only
-# subset). Failures BLOCK merge.
+# TASK 4 CI gate (extended Task 1, W6 D4, for the cost stack): every
+# PR that touches cfn/ runs cfn-lint, cfn-nag, and aws cloudformation
+# validate-template against all five stack templates. The
+# validate-template step uses OIDC against the bootstrap stack's
+# CfnDeployRole (read-only subset). Failures BLOCK merge.
 name: cfn-validate
 
 on:
@@ -100,4 +100,11 @@ jobs:
         run: |
           aws cloudformation validate-template \
             --template-body file://cfn/multistate-artifacts-dev.yaml \
+            --region us-east-1
+
+      - name: aws cloudformation validate-template (cost)
+        if: steps.aws-creds.outcome == 'success'
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cfn/multistate-cost-dev.yaml \
             --region us-east-1

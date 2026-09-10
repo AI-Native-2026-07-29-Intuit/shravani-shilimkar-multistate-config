@@ -140,9 +140,16 @@ Resources:
         "Fn::Sub": "{{resolve:secretsmanager:multistate/dev/db-master:SecretString:username}}"
       MasterUserPassword:
         "Fn::Sub": "{{resolve:secretsmanager:multistate/dev/db-master:SecretString:password}}"
+      # Cost-allocation taxonomy (Task 1, W6 D4): service/env/tenant/feature
+      # -- lets the tag-scoped AWS Budget in multistate-cost-dev.yaml see
+      # this RDS instance's spend alongside the NAT gateway's.
       Tags:
         - {Key: Env,     Value: !Ref EnvName}
         - {Key: Project, Value: multistate}
+        - {Key: service, Value: multistate}
+        - {Key: env,     Value: !Ref EnvName}
+        - {Key: tenant,  Value: shared}
+        - {Key: feature, Value: summarize-nexus}
 
   # --- Secret-to-DB attachment: rotation can target the live DB ARN.
   SecretTargetAttachment:

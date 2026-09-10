@@ -121,12 +121,22 @@ Resources:
     Properties:
       Domain: vpc
       Tags: [{Key: Name, Value: !Sub "multistate-${EnvName}-nat-eip-a"}]
+  # Cost-allocation taxonomy (Task 1, W6 D4): service/env/tenant/feature,
+  # applied to every NatGateway* -- the tag-scoped AWS Budget in
+  # multistate-cost-dev.yaml filters on user:service$multistate +
+  # user:env$<env> to see this spend (the NAT GW is the #1 unexpected
+  # AWS bill: ~$32-33/mo per gateway plus $0.045/GB).
   NatGatewayA:
     Type: AWS::EC2::NatGateway
     Properties:
       AllocationId: !GetAtt NatEipA.AllocationId
       SubnetId:     !Ref PublicSubnetA
-      Tags: [{Key: Name, Value: !Sub "multistate-${EnvName}-nat-a"}]
+      Tags:
+        - {Key: Name,    Value: !Sub "multistate-${EnvName}-nat-a"}
+        - {Key: service, Value: multistate}
+        - {Key: env,     Value: !Ref EnvName}
+        - {Key: tenant,  Value: shared}
+        - {Key: feature, Value: summarize-nexus}
 
   NatEipB:
     Type: AWS::EC2::EIP
@@ -139,6 +149,12 @@ Resources:
     Properties:
       AllocationId: !GetAtt NatEipB.AllocationId
       SubnetId:     !Ref PublicSubnetB
+      Tags:
+        - {Key: Name,    Value: !Sub "multistate-${EnvName}-nat-b"}
+        - {Key: service, Value: multistate}
+        - {Key: env,     Value: !Ref EnvName}
+        - {Key: tenant,  Value: shared}
+        - {Key: feature, Value: summarize-nexus}
 
   NatEipC:
     Type: AWS::EC2::EIP
@@ -151,6 +167,12 @@ Resources:
     Properties:
       AllocationId: !GetAtt NatEipC.AllocationId
       SubnetId:     !Ref PublicSubnetC
+      Tags:
+        - {Key: Name,    Value: !Sub "multistate-${EnvName}-nat-c"}
+        - {Key: service, Value: multistate}
+        - {Key: env,     Value: !Ref EnvName}
+        - {Key: tenant,  Value: shared}
+        - {Key: feature, Value: summarize-nexus}
 
   # --- Public route table: 0.0.0.0/0 -> IGW. Shared across all 3 AZs.
   PublicRouteTable:
