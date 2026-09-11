@@ -1,0 +1,118 @@
+# cfn/multistate-cost-dev.yaml
+# TASK 1: cost-GOVERNANCE stack over the 6.3 substrate. An AWS Budget
+# (tag-scoped) + a CloudWatch billing alarm + an SNS topic. This
+# governs AWS-resident spend (NAT gateway, RDS, S3) -- the spend AWS
+# billing CAN see. Anthropic (LLM) spend is NOT AWS spend and is
+# governed separately (Console spend limit + in-app attribution).
+#
+# Deploy via the 6.3 ChangeSet flow:
+#   aws cloudformation create-change-set --stack-name multistate-cost-dev \
+#     --change-set-name initial --change-set-type CREATE \
+#     --template-body file://cfn/multistate-cost-dev.yaml \
+#     --parameters ParameterKey=EnvName,ParameterValue=dev --region us-east-1
+AWSTemplateFormatVersion: "2010-09-09"
+Description: multistate cost-governance stack -- AWS Budget + billing alarm + SNS.
+
+Parameters:
+  EnvName: {Type: String, Default: dev, AllowedValues: [dev, staging, prod]}
+  MonthlyBudgetUsd:
+    Type: Number
+    Default: 100
+    MinValue: 20
+    MaxValue: 100000
+    Description: Monthly cost cap for the tagged stack (dev NAT ~$32 + RDS + S3).
+  BillingAlarmUsd:
+    Type: Number
+    Default: 120
+    Description: Account-wide EstimatedCharges guardrail threshold, USD.
+
+Resources:
+  CostAlarmsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: multistate-cost-alarms-dev
+      KmsMasterKeyId: alias/aws/sns   # SSE at rest
+      Tags:
+        - {Key: service, Value: multistate}
+        - {Key: env,     Value: !Ref EnvName}
+        - {Key: tenant,  Value: shared}
+        - {Key: feature, Value: summarize-nexus}
+
+  # WITHOUT this policy, Budgets/CloudWatch silently fail to publish
+  # and the notification never arrives -- a classic "green but dead" trap.
+  CostAlarmsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [ !Ref CostAlarmsTopic ]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowBudgetsPublish
+            Effect: Allow
+            Principal: {Service: budgets.amazonaws.com}
+            Action: sns:Publish
+            Resource: !Ref CostAlarmsTopic
+          - Sid: AllowCloudWatchPublish
+            Effect: Allow
+            Principal: {Service: cloudwatch.amazonaws.com}
+            Action: sns:Publish
+            Resource: !Ref CostAlarmsTopic
+
+  # Tag-scoped COST budget: sees ONLY resources tagged service=multistate
+  # env=dev (the NAT + RDS you tagged in the D3 templates). This is the
+  # enforced guardrail on AWS-resident spend.
+  MonthlyCostBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: multistate-monthly-cost-dev
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: {Amount: !Ref MonthlyBudgetUsd, Unit: USD}
+        CostFilters:
+          TagKeyValue:
+            - !Sub "user:service$multistate"
+            - !Sub "user:env$${EnvName}"
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - {SubscriptionType: SNS, Address: !Ref CostAlarmsTopic}
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - {SubscriptionType: SNS, Address: !Ref CostAlarmsTopic}
+
+  # Account-wide guardrail. EstimatedCharges lives ONLY in us-east-1 and
+  # CANNOT be filtered by tag -- that is why the tag-scoped Budget exists.
+  # Billing updates ~every 6h, so missing data is normal: ignore it
+  # (contrast a metric-pipeline alarm, where silence = breaching).
+  EstimatedChargesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: multistate/estimated-charges-dev
+      AlarmDescription: !Sub "Account-wide EstimatedCharges > ${BillingAlarmUsd} USD."
+      Namespace: AWS/Billing
+      MetricName: EstimatedCharges
+      Dimensions:
+        - {Name: Currency, Value: USD}
+      Statistic: Maximum
+      Period: 21600            # 6h
+      EvaluationPeriods: 1
+      Threshold: !Ref BillingAlarmUsd
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: ignore
+      ActionsEnabled: true
+      AlarmActions: [ !Ref CostAlarmsTopic ]
+      OKActions:    [ !Ref CostAlarmsTopic ]
+
+Outputs:
+  CostAlarmsTopicArn:
+    Value: !Ref CostAlarmsTopic
+    Export: {Name: !Sub "${AWS::StackName}-CostAlarmsTopicArn"}
